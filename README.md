@@ -41,7 +41,7 @@ This package now declares a packaged dependency on `pi-subagent-tool`, so Pi can
 ## Repository Layout
 
 - `extensions/session-memory/index.ts` - extension lifecycle, thresholds, compaction integration, commands
-- `extensions/session-memory/prompts.ts` - Claude-derived template and prompt text with Pi-specific adaptation
+- `extensions/session-memory/prompts.ts` - Claude-derived template and prompt text
 - `node_modules/pi-subagent-tool/extensions/...` - reusable subagent package loaded as a Pi package dependency
 
 ## Claude Parity Notes
@@ -54,7 +54,7 @@ This package preserves Claude's main session-memory behavior as closely as Pi's 
 - token and tool-call based update thresholds
 - session-memory-first compaction path
 
-Pi does not expose Claude's exact post-sampling hook and forked-agent Edit-only pathway, so this package approximates those parts with Pi's `turn_end` lifecycle plus a direct model completion that returns the full updated markdown file.
+Pi does not expose Claude's exact post-sampling hook, so this package approximates that part with Pi's `turn_end` lifecycle. Memory extraction itself now runs through a reusable subprocess-based Pi subagent (`pi-subagent-tool`) so the update flow is much closer to Claude's forked-agent model than a direct single completion call.
 
 ## Optional Overrides
 

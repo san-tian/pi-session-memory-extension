@@ -1,19 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { complete } from "@mariozechner/pi-ai";
+import { runPiSubagent } from "pi-subagent-tool/extensions/subagent/runtime";
 import {
 	buildSessionContext,
 	convertToLlm,
 	serializeConversation,
 	type ExtensionAPI,
-	type ExtensionCommandContext,
 	type ExtensionContext,
 	type SessionEntry,
 } from "@mariozechner/pi-coding-agent";
 
 import {
-	buildSessionMemoryCompactionPrompt,
 	buildSessionMemoryUpdatePrompt,
 	DEFAULT_SESSION_MEMORY_TEMPLATE,
 	isSessionMemoryEmpty,
@@ -23,6 +21,8 @@ import {
 
 const STATE_ENTRY_TYPE = "session-memory-state";
 const REPORT_MESSAGE_TYPE = "session-memory-report";
+const ACTIVE_UPDATE_WAIT_TIMEOUT_MS = 15000;
+const ACTIVE_UPDATE_WAIT_INTERVAL_MS = 200;
 
 const DEFAULT_CONFIG = {
 	minimumMessageTokensToInit: 10000,
@@ -41,8 +41,7 @@ type SessionMemoryState = {
 
 type UpdateOptions = {
 	force: boolean;
-	reason: "auto" | "manual" | "compact";
-	conversationText?: string;
+	reason: "auto" | "manual";
 };
 
 type UpdateResult = {
@@ -98,33 +97,35 @@ export default function sessionMemoryExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
-		const result = await updateSessionMemory(pi, ctx, {
-			force: true,
-			reason: "compact",
-			conversationText: serializeConversation(convertToLlm([
-				...event.preparation.messagesToSummarize,
-				...event.preparation.turnPrefixMessages,
-			])),
-		});
+		await waitForActiveUpdate(ctx);
 
-		if (!result.ok || !result.notesContent || !result.notesPath) {
+		const notesPath = getNotesPath(ctx);
+		if (!(await fileExists(notesPath))) {
 			return;
 		}
 
-		if (await isSessionMemoryEmpty(result.notesContent)) {
+		const notesContent = await fs.readFile(notesPath, "utf8");
+		if (await isSessionMemoryEmpty(notesContent)) {
 			return;
 		}
 
-		const { truncatedContent } = truncateSessionMemoryForCompact(result.notesContent);
+		const { truncatedContent } = truncateSessionMemoryForCompact(notesContent);
+		const state = getState(ctx);
+		const firstKeptEntryId = deriveFirstKeptEntryId(
+			event.branchEntries,
+			event.preparation.firstKeptEntryId,
+			state.lastSummarizedEntryId,
+		);
 
 		return {
 			compaction: {
 				summary: truncatedContent,
-				firstKeptEntryId: event.preparation.firstKeptEntryId,
+				firstKeptEntryId,
 				tokensBefore: event.preparation.tokensBefore,
 				details: {
 					source: "session-memory",
-					notesPath: result.notesPath,
+					notesPath,
+					lastSummarizedEntryId: state.lastSummarizedEntryId,
 				},
 			},
 		};
@@ -171,6 +172,7 @@ export default function sessionMemoryExtension(pi: ExtensionAPI) {
 					`- Last summarized entry: ${state.lastSummarizedEntryId ?? "(none)"}`,
 					`- Updated at: ${state.updatedAt ?? "(never)"}`,
 					`- Empty/template only: ${empty}`,
+					`- Update running: ${activeUpdates.has(getSessionKey(ctx))}`,
 				].join("\n"),
 			);
 		},
@@ -310,16 +312,6 @@ function hasToolCallsInLastAssistantTurn(entries: SessionEntry[]): boolean {
 	return false;
 }
 
-function getLastAssistantEntryId(entries: SessionEntry[]): string | undefined {
-	for (let index = entries.length - 1; index >= 0; index -= 1) {
-		const entry = entries[index];
-		if (entry?.type === "message" && entry.message.role === "assistant") {
-			return entry.id;
-		}
-	}
-	return undefined;
-}
-
 async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, options: UpdateOptions): Promise<UpdateResult> {
 	const key = getSessionKey(ctx);
 	if (activeUpdates.has(key)) {
@@ -335,67 +327,42 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 		}
 
 		const { notesPath, currentNotes, template } = await ensureMemoryFile(ctx);
-		const conversationText = options.conversationText ?? serializeConversation(convertToLlm(context.messages));
-		const prompt = options.reason === "compact"
-			? await buildSessionMemoryCompactionPrompt(currentNotes, notesPath, conversationText)
-			: await buildSessionMemoryUpdatePrompt(currentNotes, notesPath, conversationText);
+		const conversationText = serializeConversation(convertToLlm(context.messages));
+		const prompt = await buildSessionMemoryUpdatePrompt(currentNotes, notesPath);
 		const model = resolveModel(ctx);
 		if (!model) {
 			return { ok: false, error: "No model available for session memory extraction" };
 		}
 
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok) {
-			return { ok: false, error: auth.error };
-		}
-		if (!auth.apiKey) {
-			return { ok: false, error: `No API key for ${model.provider}/${model.id}` };
-		}
+		const result = await runPiSubagent({
+			cwd: ctx.cwd,
+			prompt,
+			model: formatCliModel(model),
+			tools: ["edit"],
+			signal: ctx.signal,
+			systemPrompt: ctx.getSystemPrompt(),
+			hiddenContext: conversationText,
+			hiddenContextType: "session-memory-context",
+		});
 
-		const response = await complete(
-			model,
-			{
-				messages: [
-					{
-						role: "user",
-						content: [{ type: "text", text: prompt }],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				maxTokens: 8192,
-				signal: ctx.signal,
-			},
-		);
-
-		const rawNotes = response.content
-			.filter((block): block is { type: "text"; text: string } => block.type === "text")
-			.map((block) => block.text)
-			.join("\n")
-			.trim();
-
-		if (!rawNotes) {
-			return { ok: false, error: "Model returned an empty session memory update" };
+		if (result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted") {
+			return {
+				ok: false,
+				error: formatSubagentError(result),
+			};
 		}
 
-		const nextNotes = sanitizeNotes(rawNotes);
+		const nextNotes = sanitizeNotes(await fs.readFile(notesPath, "utf8"));
 		if (!matchesTemplateStructure(nextNotes, template)) {
-			return { ok: false, error: "Model output did not preserve the session memory template structure" };
+			return { ok: false, error: "Subagent output did not preserve the session memory template structure" };
 		}
 
-		await fs.writeFile(notesPath, `${nextNotes.trimEnd()}\n`, "utf8");
-
-		const tokenCount = ctx.getContextUsage()?.tokens ?? roughTokenCount(options.conversationText ?? conversationText);
+		const tokenCount = ctx.getContextUsage()?.tokens ?? roughTokenCount(conversationText);
 		const nextState: SessionMemoryState = {
 			initialized: true,
 			tokensAtLastExtraction: tokenCount,
 			lastTriggerEntryId: ctx.sessionManager.getLeafId() ?? state.lastTriggerEntryId,
-			lastSummarizedEntryId: hasToolCallsInLastAssistantTurn(ctx.sessionManager.getBranch())
-				? state.lastSummarizedEntryId
-				: getLastAssistantEntryId(ctx.sessionManager.getBranch()) ?? state.lastSummarizedEntryId,
+			lastSummarizedEntryId: ctx.sessionManager.getLeafId() ?? state.lastSummarizedEntryId,
 			updatedAt: new Date().toISOString(),
 			notesPath,
 		};
@@ -430,6 +397,48 @@ function resolveModel(ctx: ExtensionContext) {
 	);
 }
 
+function formatCliModel(model: { provider: string; id: string }): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function formatSubagentError(result: {
+	stderr: string;
+	errorMessage?: string;
+	messages: Array<{ role?: string; content?: unknown }>;
+	stopReason?: string;
+}): string {
+	if (result.errorMessage) {
+		return result.errorMessage;
+	}
+	const lastAssistantText = getLastAssistantText(result.messages);
+	if (lastAssistantText) {
+		return lastAssistantText;
+	}
+	if (result.stderr.trim()) {
+		return result.stderr.trim();
+	}
+	return result.stopReason ? `Subagent stopped: ${result.stopReason}` : "Subagent failed";
+}
+
+function getLastAssistantText(messages: Array<{ role?: string; content?: unknown }>): string {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "assistant" || !Array.isArray(message.content)) {
+			continue;
+		}
+		const text = message.content
+			.filter((part): part is { type: string; text?: string } => Boolean(part) && typeof part === "object")
+			.filter((part) => part.type === "text" && typeof part.text === "string")
+			.map((part) => part.text ?? "")
+			.join("\n")
+			.trim();
+		if (text) {
+			return text;
+		}
+	}
+	return "";
+}
+
 function sanitizeNotes(raw: string): string {
 	let text = raw.trim();
 	if (text.startsWith("```")) {
@@ -453,8 +462,39 @@ function extractTemplateMarkers(content: string): string[] {
 		.filter((line) => line.startsWith("# ") || (/^_.*_$/.test(line) && !line.includes("[... section truncated")));
 }
 
+function deriveFirstKeptEntryId(entries: SessionEntry[], defaultEntryId: string, lastSummarizedEntryId?: string): string {
+	const defaultIndex = entries.findIndex((entry) => entry.id === defaultEntryId);
+	if (defaultIndex === -1 || !lastSummarizedEntryId) {
+		return defaultEntryId;
+	}
+
+	const summarizedIndex = entries.findIndex((entry) => entry.id === lastSummarizedEntryId);
+	if (summarizedIndex === -1) {
+		return defaultEntryId;
+	}
+
+	const nextIndex = summarizedIndex < entries.length - 1 ? summarizedIndex + 1 : summarizedIndex;
+	const keptIndex = Math.max(defaultIndex, nextIndex);
+	return entries[keptIndex]?.id ?? defaultEntryId;
+}
+
 function roughTokenCount(content: string): number {
 	return Math.ceil(content.length / 4);
+}
+
+async function waitForActiveUpdate(ctx: ExtensionContext): Promise<void> {
+	const key = getSessionKey(ctx);
+	const startedAt = Date.now();
+	while (activeUpdates.has(key)) {
+		if (Date.now() - startedAt >= ACTIVE_UPDATE_WAIT_TIMEOUT_MS) {
+			return;
+		}
+		await sleep(ACTIVE_UPDATE_WAIT_INTERVAL_MS);
+	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

@@ -77,38 +77,6 @@ You ONLY update the actual content that comes AFTER these two preserved lines. T
 REMEMBER: Use the Edit tool in parallel and stop. Do not continue after the edits. Only include insights from the actual user conversation, never from these note-taking instructions. Do not delete or change section headers or italic _section descriptions_.`;
 }
 
-function getPiAdaptationSuffix(): string {
-	return `
-
-The actual conversation to use for updating the session notes is included below.
-<conversation>
-{{conversationText}}
-</conversation>
-
-PI ADAPTATION:
-- You do not have tools in this background summarization step.
-- Return the COMPLETE updated contents of {{notesPath}} as plain markdown.
-- Do not wrap the output in code fences.
-- Preserve the exact section headers and italic description lines from the current notes file.
-- Do not include any commentary before or after the markdown file content.`;
-}
-
-function getPiCompactionSuffix(): string {
-	return `
-
-The conversation below is the segment that is about to be compacted.
-Merge anything important from it into the session notes while preserving the exact template structure.
-<conversation>
-{{conversationText}}
-</conversation>
-
-PI ADAPTATION:
-- Return the COMPLETE updated contents of {{notesPath}} as plain markdown.
-- Do not wrap the output in code fences.
-- Preserve the exact section headers and italic description lines from the current notes file.
-- Focus especially on updating "Current State", "Errors & Corrections", "Files and Functions", and "Worklog" when the compacted segment contains fresh information.`;
-}
-
 function getPiConfigDir(): string {
 	return path.join(homedir(), ".pi", "session-memory", "config");
 }
@@ -212,30 +180,8 @@ async function buildBasePrompt(currentNotes: string, notesPath: string): Promise
 	return basePrompt + sectionReminders;
 }
 
-export async function buildSessionMemoryUpdatePrompt(
-	currentNotes: string,
-	notesPath: string,
-	conversationText: string,
-): Promise<string> {
-	const basePrompt = await buildBasePrompt(currentNotes, notesPath);
-	return substituteVariables(`${basePrompt}${getPiAdaptationSuffix()}`, {
-		currentNotes,
-		notesPath,
-		conversationText,
-	});
-}
-
-export async function buildSessionMemoryCompactionPrompt(
-	currentNotes: string,
-	notesPath: string,
-	conversationText: string,
-): Promise<string> {
-	const basePrompt = await buildBasePrompt(currentNotes, notesPath);
-	return substituteVariables(`${basePrompt}${getPiCompactionSuffix()}`, {
-		currentNotes,
-		notesPath,
-		conversationText,
-	});
+export async function buildSessionMemoryUpdatePrompt(currentNotes: string, notesPath: string): Promise<string> {
+	return buildBasePrompt(currentNotes, notesPath);
 }
 
 export function truncateSessionMemoryForCompact(content: string): {

@@ -15,7 +15,7 @@
     "url": "https://github.com/san-tian/pi-session-memory-extension.git"
   },
   "dependencies": {
-    "pi-subagent-tool": "git+https://github.com/san-tian/pi-subagent-tool.git"
+    "pi-subagent-tool": "git+https://github.com/san-tian/pi-subagent-tool.git#8ef73bc"
   },
   "bundledDependencies": [
     "pi-subagent-tool"
