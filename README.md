@@ -59,7 +59,7 @@ This package preserves Claude's main session-memory behavior as closely as Pi's 
 - structured `summary.md` template
 - strict template-preserving update instructions
 - token and tool-call based update thresholds
-- session-memory-first compaction path
+- session-memory can enhance the packaged remote-compaction path once a usable summary exists
 
 Pi does not expose Claude's exact post-sampling hook, so this package approximates that part with Pi's `turn_end` lifecycle. Memory extraction itself runs through a reusable subprocess-based Pi subagent (`pi-subagent-tool`), while compaction is delegated to the packaged `pi-codex-remote-compaction` dependency so OpenAI Responses remote compaction remains the main compaction path.
 
