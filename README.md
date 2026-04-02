@@ -12,7 +12,7 @@ Claude-style session memory for Pi, packaged as a standalone Pi package so it ca
   - `~/.pi/projects/<project-id>/<session-id>/session-memory/summary.md`
   - legacy project-local memory files are copied forward automatically on first access
 - Claude-derived session memory template and update prompt text
-- Pi compaction integration via `session_before_compact`
+- No built-in compaction hook in this package; compaction is delegated to the packaged `pi-codex-remote-compaction` dependency
 - Slash commands:
   - `/session-memory-update`
   - `/session-memory-status`
@@ -46,7 +46,7 @@ Pi loads both dependency resources from `node_modules/...` when the package is i
 
 ## Repository Layout
 
-- `extensions/session-memory/index.ts` - extension lifecycle, thresholds, compaction integration, commands
+- `extensions/session-memory/index.ts` - extension lifecycle, thresholds, session-memory extraction, commands
 - `extensions/session-memory/prompts.ts` - Claude-derived template and prompt text
 - `node_modules/pi-subagent-tool/extensions/...` - reusable subagent package loaded as a Pi package dependency
 - `node_modules/pi-codex-remote-compaction/index.ts` - primary OpenAI remote compaction hook loaded as a Pi package dependency
