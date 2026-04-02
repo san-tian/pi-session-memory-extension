@@ -21,6 +21,7 @@ import {
 
 const STATE_ENTRY_TYPE = "session-memory-state";
 const REPORT_MESSAGE_TYPE = "session-memory-report";
+const _SESSION_MEMORY_SUBAGENT_ENV = "_PI_SESSION_MEMORY_SUBAGENT";
 const DEFAULT_CONFIG = {
 	minimumMessageTokensToInit: 10000,
 	minimumTokensBetweenUpdate: 5000,
@@ -73,6 +74,9 @@ export default function sessionMemoryExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (event, ctx) => {
+		if (isSessionMemorySubagentProcess()) {
+			return;
+		}
 		const decision = getExtractionDecision(ctx);
 		if (!decision.shouldExtract) {
 			return;
@@ -97,6 +101,10 @@ export default function sessionMemoryExtension(pi: ExtensionAPI) {
 	pi.registerCommand("session-memory-update", {
 		description: "Force a Claude-style session memory refresh",
 		handler: async (_args, ctx) => {
+			if (isSessionMemorySubagentProcess()) {
+				ctx.ui.notify("Session memory update is disabled inside the internal session-memory subagent", "warning");
+				return;
+			}
 			const result = await updateSessionMemory(pi, ctx, {
 				force: true,
 				reason: "manual",
@@ -314,6 +322,9 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 			systemPrompt: ctx.getSystemPrompt(),
 			hiddenContext: conversationText,
 			hiddenContextType: "session-memory-context",
+			env: {
+				[_SESSION_MEMORY_SUBAGENT_ENV]: "1",
+			},
 		});
 
 		if (result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted") {
@@ -370,6 +381,10 @@ function resolveModel(ctx: ExtensionContext) {
 
 function formatCliModel(model: { provider: string; id: string }): string {
 	return `${model.provider}/${model.id}`;
+}
+
+function isSessionMemorySubagentProcess(): boolean {
+	return process.env[_SESSION_MEMORY_SUBAGENT_ENV] === "1";
 }
 
 function formatSubagentError(result: {

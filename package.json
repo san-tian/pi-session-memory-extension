@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@san-tian/pi-project-paths": "git+https://github.com/san-tian/pi-project-paths.git#v0.1.0",
-    "pi-codex-remote-compaction": "github:san-tian/pi-codex-remote-compaction#ff9e72b",
+    "pi-codex-remote-compaction": "git+https://github.com/san-tian/pi-codex-remote-compaction.git#940ef09",
     "pi-subagent-tool": "git+https://github.com/san-tian/pi-subagent-tool.git#8ef73bc"
   },
   "bundledDependencies": [
