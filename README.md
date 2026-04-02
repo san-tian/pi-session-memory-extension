@@ -36,10 +36,13 @@ From a local checkout:
 pi install /absolute/path/to/pi-session-memory-extension
 ```
 
+This package now declares a packaged dependency on `pi-subagent-tool`, so Pi can load the reusable subagent extension from `node_modules/pi-subagent-tool/extensions` when the package is installed.
+
 ## Repository Layout
 
 - `extensions/session-memory/index.ts` - extension lifecycle, thresholds, compaction integration, commands
 - `extensions/session-memory/prompts.ts` - Claude-derived template and prompt text with Pi-specific adaptation
+- `node_modules/pi-subagent-tool/extensions/...` - reusable subagent package loaded as a Pi package dependency
 
 ## Claude Parity Notes
 
