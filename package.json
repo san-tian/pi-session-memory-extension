@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@san-tian/pi-project-paths": "git+https://github.com/san-tian/pi-project-paths.git#v0.1.0",
-    "pi-codex-remote-compaction": "git+https://github.com/san-tian/pi-codex-remote-compaction.git#cc985c8",
+    "pi-codex-remote-compaction": "github:san-tian/pi-codex-remote-compaction#ff9e72b",
     "pi-subagent-tool": "git+https://github.com/san-tian/pi-subagent-tool.git#8ef73bc"
   },
   "bundledDependencies": [
@@ -25,8 +25,8 @@
     "pi-subagent-tool"
   ],
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
@@ -37,5 +37,10 @@
       "node_modules/pi-subagent-tool/extensions",
       "node_modules/pi-codex-remote-compaction/index.ts"
     ]
-  }
+  },
+  "bundleDependencies": [
+    "@san-tian/pi-project-paths",
+    "pi-codex-remote-compaction",
+    "pi-subagent-tool"
+  ]
 }
