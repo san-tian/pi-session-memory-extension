@@ -15,9 +15,13 @@
     "url": "https://github.com/san-tian/pi-session-memory-extension.git"
   },
   "dependencies": {
+    "@san-tian/pi-project-paths": "git+https://github.com/san-tian/pi-project-paths.git#v0.1.0",
+    "pi-codex-remote-compaction": "git+https://github.com/san-tian/pi-codex-remote-compaction.git#cc985c8",
     "pi-subagent-tool": "git+https://github.com/san-tian/pi-subagent-tool.git#8ef73bc"
   },
   "bundledDependencies": [
+    "@san-tian/pi-project-paths",
+    "pi-codex-remote-compaction",
     "pi-subagent-tool"
   ],
   "peerDependencies": {
@@ -30,7 +34,8 @@
   "pi": {
     "extensions": [
       "./extensions",
-      "node_modules/pi-subagent-tool/extensions"
+      "node_modules/pi-subagent-tool/extensions",
+      "node_modules/pi-codex-remote-compaction/index.ts"
     ]
   }
 }

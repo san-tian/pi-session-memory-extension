@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 
+import { getPiProjectSubdir } from "@san-tian/pi-project-paths";
 import { runPiSubagent } from "pi-subagent-tool/extensions/subagent/runtime";
 import {
 	buildSessionContext,
@@ -17,24 +17,14 @@ import {
 	DEFAULT_SESSION_MEMORY_TEMPLATE,
 	isSessionMemoryEmpty,
 	loadSessionMemoryTemplate,
-	truncateSessionMemoryForCompact,
 } from "./prompts";
 
 const STATE_ENTRY_TYPE = "session-memory-state";
 const REPORT_MESSAGE_TYPE = "session-memory-report";
-const ACTIVE_UPDATE_WAIT_TIMEOUT_MS = 15000;
-const ACTIVE_UPDATE_WAIT_INTERVAL_MS = 200;
-
 const DEFAULT_CONFIG = {
 	minimumMessageTokensToInit: 10000,
 	minimumTokensBetweenUpdate: 5000,
 	toolCallsBetweenUpdates: 3,
-};
-
-const COMPACT_CONFIG = {
-	minTokens: 10000,
-	minTextEntries: 5,
-	maxTokens: 40000,
 };
 
 type SessionMemoryState = {
@@ -103,40 +93,6 @@ export default function sessionMemoryExtension(pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("session_before_compact", async (event, ctx) => {
-		await waitForActiveUpdate(ctx);
-
-		const notesPath = getNotesPath(ctx);
-		if (!(await fileExists(notesPath))) {
-			return;
-		}
-
-		const notesContent = await fs.readFile(notesPath, "utf8");
-		if (await isSessionMemoryEmpty(notesContent)) {
-			return;
-		}
-
-		const { truncatedContent } = truncateSessionMemoryForCompact(notesContent);
-		const state = getState(ctx);
-		const firstKeptEntryId = deriveFirstKeptEntryId(
-			event.branchEntries,
-			event.preparation.firstKeptEntryId,
-			state.lastSummarizedEntryId,
-		);
-
-		return {
-			compaction: {
-				summary: truncatedContent,
-				firstKeptEntryId,
-				tokensBefore: event.preparation.tokensBefore,
-				details: {
-					source: "session-memory",
-					notesPath,
-					lastSummarizedEntryId: state.lastSummarizedEntryId,
-				},
-			},
-		};
-	});
 
 	pi.registerCommand("session-memory-update", {
 		description: "Force a Claude-style session memory refresh",
@@ -223,14 +179,7 @@ function setState(pi: ExtensionAPI, ctx: ExtensionContext, next: SessionMemorySt
 }
 
 function getNotesDir(ctx: ExtensionContext): string {
-	return path.join(
-		homedir(),
-		".pi",
-		"projects",
-		sanitizeProjectPath(ctx.sessionManager.getCwd()),
-		ctx.sessionManager.getSessionId(),
-		"session-memory",
-	);
+	return getPiProjectSubdir(ctx.sessionManager.getCwd(), ctx.sessionManager.getSessionId(), "session-memory");
 }
 
 function getNotesPath(ctx: ExtensionContext): string {
@@ -254,15 +203,6 @@ async function ensureMemoryFile(ctx: ExtensionContext): Promise<{ notesPath: str
 	}
 	const currentNotes = await fs.readFile(notesPath, "utf8");
 	return { notesPath, currentNotes, template };
-}
-
-function sanitizeProjectPath(cwd: string): string {
-	return cwd
-		.replace(/^[A-Za-z]:/, (match) => match[0].toLowerCase())
-		.replace(/[\\/]+/g, "-")
-		.replace(/[^a-zA-Z0-9._-]+/g, "-")
-		.replace(/-+/g, "-")
-		.replace(/^-|-$/g, "") || "root";
 }
 
 function getExtractionDecision(ctx: ExtensionContext): { shouldExtract: boolean } {
@@ -493,187 +433,8 @@ function extractTemplateMarkers(content: string): string[] {
 		.filter((line) => line.startsWith("# ") || (/^_.*_$/.test(line) && !line.includes("[... section truncated")));
 }
 
-function deriveFirstKeptEntryId(entries: SessionEntry[], defaultEntryId: string, lastSummarizedEntryId?: string): string {
-	const defaultIndex = entries.findIndex((entry) => entry.id === defaultEntryId);
-	if (defaultIndex === -1) {
-		return defaultEntryId;
-	}
-
-	let startIndex = entries.length;
-	if (lastSummarizedEntryId) {
-		const summarizedIndex = entries.findIndex((entry) => entry.id === lastSummarizedEntryId);
-		if (summarizedIndex !== -1) {
-			startIndex = Math.min(entries.length, summarizedIndex + 1);
-		}
-	}
-
-	startIndex = expandStartIndexForRecentContext(entries, startIndex, defaultIndex);
-	startIndex = adjustStartIndexToPreserveToolGroups(entries, startIndex, defaultIndex);
-
-	return entries[startIndex]?.id ?? defaultEntryId;
-}
-
-function expandStartIndexForRecentContext(entries: SessionEntry[], startIndex: number, floorIndex: number): number {
-	if (entries.length === 0) {
-		return 0;
-	}
-
-	let nextStart = Math.max(Math.min(startIndex, entries.length), floorIndex);
-	let totalTokens = 0;
-	let textEntryCount = 0;
-
-	for (let index = nextStart; index < entries.length; index += 1) {
-		totalTokens += estimateEntryTokens(entries[index]);
-		if (entryHasText(entries[index])) {
-			textEntryCount += 1;
-		}
-	}
-
-	if (totalTokens >= COMPACT_CONFIG.maxTokens) {
-		return nextStart;
-	}
-
-	if (totalTokens >= COMPACT_CONFIG.minTokens && textEntryCount >= COMPACT_CONFIG.minTextEntries) {
-		return nextStart;
-	}
-
-	for (let index = nextStart - 1; index >= floorIndex; index -= 1) {
-		totalTokens += estimateEntryTokens(entries[index]);
-		if (entryHasText(entries[index])) {
-			textEntryCount += 1;
-		}
-		nextStart = index;
-
-		if (totalTokens >= COMPACT_CONFIG.maxTokens) {
-			break;
-		}
-
-		if (totalTokens >= COMPACT_CONFIG.minTokens && textEntryCount >= COMPACT_CONFIG.minTextEntries) {
-			break;
-		}
-	}
-
-	return nextStart;
-}
-
-function adjustStartIndexToPreserveToolGroups(entries: SessionEntry[], startIndex: number, floorIndex: number): number {
-	let nextStart = startIndex;
-	while (nextStart > floorIndex && isToolResultEntry(entries[nextStart])) {
-		nextStart -= 1;
-	}
-
-	if (nextStart > floorIndex && isAssistantToolCallEntry(entries[nextStart - 1]) && isToolResultEntry(entries[nextStart])) {
-		nextStart -= 1;
-	}
-
-	return nextStart;
-}
-
-function estimateEntryTokens(entry: SessionEntry | undefined): number {
-	if (!entry) {
-		return 0;
-	}
-	if (entry.type === "message") {
-		return roughTokenCount(extractMessageText(entry.message));
-	}
-	if (entry.type === "custom_message") {
-		return roughTokenCount(extractContentText(entry.content));
-	}
-	if (entry.type === "compaction" || entry.type === "branch_summary") {
-		return roughTokenCount(entry.summary);
-	}
-	return 0;
-}
-
-function entryHasText(entry: SessionEntry | undefined): boolean {
-	if (!entry) {
-		return false;
-	}
-	if (entry.type === "message") {
-		if (entry.message.role !== "assistant" && entry.message.role !== "user") {
-			return false;
-		}
-		return extractMessageText(entry.message).trim().length > 0;
-	}
-	if (entry.type === "custom_message") {
-		return extractContentText(entry.content).trim().length > 0;
-	}
-	return false;
-}
-
-function extractMessageText(message: { content?: unknown }): string {
-	return extractContentText(message.content);
-}
-
-function extractContentText(content: unknown): string {
-	if (typeof content === "string") {
-		return content;
-	}
-	if (!Array.isArray(content)) {
-		return "";
-	}
-
-	const parts: string[] = [];
-	for (const part of content) {
-		if (!part || typeof part !== "object") {
-			continue;
-		}
-		const block = part as {
-			type?: string;
-			text?: string;
-			name?: string;
-			arguments?: unknown;
-			content?: unknown;
-		};
-		if (block.type === "text" && typeof block.text === "string") {
-			parts.push(block.text);
-			continue;
-		}
-		if ((block.type === "toolCall" || block.type === "tool_use") && typeof block.name === "string") {
-			parts.push(`tool:${block.name} ${JSON.stringify(block.arguments ?? {})}`);
-			continue;
-		}
-		if ((block.type === "tool_result" || block.type === "toolResult") && block.content !== undefined) {
-			parts.push(extractContentText(block.content));
-		}
-	}
-	return parts.join("\n");
-}
-
-function isToolResultEntry(entry: SessionEntry | undefined): boolean {
-	return Boolean(entry && entry.type === "message" && entry.message.role === "toolResult");
-}
-
-function isAssistantToolCallEntry(entry: SessionEntry | undefined): boolean {
-	if (!entry || entry.type !== "message" || entry.message.role !== "assistant" || !Array.isArray(entry.message.content)) {
-		return false;
-	}
-	return entry.message.content.some((part) => {
-		if (!part || typeof part !== "object") {
-			return false;
-		}
-		const block = part as { type?: string };
-		return block.type === "toolCall" || block.type === "tool_use";
-	});
-}
-
 function roughTokenCount(content: string): number {
 	return Math.ceil(content.length / 4);
-}
-
-async function waitForActiveUpdate(ctx: ExtensionContext): Promise<void> {
-	const key = getSessionKey(ctx);
-	const startedAt = Date.now();
-	while (activeUpdates.has(key)) {
-		if (Date.now() - startedAt >= ACTIVE_UPDATE_WAIT_TIMEOUT_MS) {
-			return;
-		}
-		await sleep(ACTIVE_UPDATE_WAIT_INTERVAL_MS);
-	}
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
