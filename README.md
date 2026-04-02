@@ -9,7 +9,8 @@ Claude-style session memory for Pi, packaged as a standalone Pi package so it ca
   - `minimumTokensBetweenUpdate`: `5000`
   - `toolCallsBetweenUpdates`: `3`
 - Per-session markdown memory file:
-  - `.pi/session-memory/<session-id>/summary.md`
+  - `~/.pi/projects/<sanitized-cwd>/<session-id>/session-memory/summary.md`
+  - legacy project-local memory files are copied forward automatically on first access
 - Claude-derived session memory template and update prompt text
 - Pi compaction integration via `session_before_compact`
 - Slash commands:

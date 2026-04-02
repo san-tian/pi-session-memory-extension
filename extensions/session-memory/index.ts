@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { runPiSubagent } from "pi-subagent-tool/extensions/subagent/runtime";
@@ -216,22 +217,46 @@ function setState(pi: ExtensionAPI, ctx: ExtensionContext, next: SessionMemorySt
 }
 
 function getNotesDir(ctx: ExtensionContext): string {
-	return path.join(ctx.sessionManager.getCwd(), ".pi", "session-memory", ctx.sessionManager.getSessionId());
+	return path.join(
+		homedir(),
+		".pi",
+		"projects",
+		sanitizeProjectPath(ctx.sessionManager.getCwd()),
+		ctx.sessionManager.getSessionId(),
+		"session-memory",
+	);
 }
 
 function getNotesPath(ctx: ExtensionContext): string {
 	return path.join(getNotesDir(ctx), "summary.md");
 }
 
+function getLegacyNotesPath(ctx: ExtensionContext): string {
+	return path.join(ctx.sessionManager.getCwd(), ".pi", "session-memory", ctx.sessionManager.getSessionId(), "summary.md");
+}
+
 async function ensureMemoryFile(ctx: ExtensionContext): Promise<{ notesPath: string; currentNotes: string; template: string }> {
 	const notesPath = getNotesPath(ctx);
+	const legacyNotesPath = getLegacyNotesPath(ctx);
 	const template = await loadSessionMemoryTemplate();
 	await fs.mkdir(path.dirname(notesPath), { recursive: true });
+	if (!(await fileExists(notesPath)) && (await fileExists(legacyNotesPath))) {
+		await fs.copyFile(legacyNotesPath, notesPath);
+	}
 	if (!(await fileExists(notesPath))) {
 		await fs.writeFile(notesPath, template, "utf8");
 	}
 	const currentNotes = await fs.readFile(notesPath, "utf8");
 	return { notesPath, currentNotes, template };
+}
+
+function sanitizeProjectPath(cwd: string): string {
+	return cwd
+		.replace(/^[A-Za-z]:/, (match) => match[0].toLowerCase())
+		.replace(/[\\/]+/g, "-")
+		.replace(/[^a-zA-Z0-9._-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "") || "root";
 }
 
 function getExtractionDecision(ctx: ExtensionContext): { shouldExtract: boolean } {
