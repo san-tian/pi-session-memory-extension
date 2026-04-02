@@ -1,0 +1,29 @@
+{
+  "name": "pi-session-memory-extension",
+  "version": "0.1.0",
+  "description": "Claude-style session memory for Pi, packaged as an installable Pi extension.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "session-memory",
+    "claude"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/san-tian/pi-session-memory-extension.git"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
