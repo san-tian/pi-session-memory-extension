@@ -12,6 +12,7 @@ Claude-style session memory for Pi, packaged as a standalone Pi package so it ca
   - `~/.pi/projects/<project-id>/<session-id>/session-memory/summary.md`
   - legacy project-local memory files are copied forward automatically on first access
 - Claude-derived session memory template and update prompt text
+- Template normalization that repairs recoverable header/guidance drift before and after subagent edits
 - No built-in compaction hook in this package; compaction is delegated to the packaged `pi-codex-remote-compaction` dependency
 - Slash commands:
   - `/session-memory-update`
@@ -37,12 +38,15 @@ From a local checkout:
 pi install /absolute/path/to/pi-session-memory-extension
 ```
 
-This package now declares packaged dependencies on:
+This package declares a packaged dependency on:
 
-- `pi-subagent-tool` for subprocess-based session-memory extraction
 - `pi-codex-remote-compaction` as the primary compaction hook for OpenAI Responses remote compaction
 
-Pi loads both dependency resources from `node_modules/...` when the package is installed.
+This package does not bundle or install `pi-subagent-tool` internally. Session-memory extraction expects a separately installed `pi-subagent-tool` package at runtime:
+
+```bash
+pi install git:github.com/san-tian/pi-subagent-tool
+```
 
 ## Repository Layout
 
@@ -57,7 +61,7 @@ This package preserves Claude's main session-memory behavior as closely as Pi's 
 
 - delayed session-memory creation
 - structured `summary.md` template
-- strict template-preserving update instructions
+- strict template-preserving update instructions plus template normalization/recovery for common drift cases
 - token and tool-call based update thresholds
 - session-memory can enhance the packaged remote-compaction path once a usable summary exists
 

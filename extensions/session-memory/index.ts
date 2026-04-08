@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { getPiProjectSubdir } from "@san-tian/pi-project-paths";
-import { runPiSubagent } from "pi-subagent-tool/extensions/subagent/runtime";
+import { runPiSubagent } from "./pi-subagent-runtime";
 import {
 	buildSessionContext,
 	convertToLlm,
@@ -49,6 +49,19 @@ type UpdateResult = {
 	notesPath?: string;
 	notesContent?: string;
 	state?: SessionMemoryState;
+};
+
+type NotesSection = {
+	header: string;
+	description: string;
+	body: string;
+};
+
+type NotesRepairResult = {
+	ok: boolean;
+	content: string;
+	repaired: boolean;
+	diagnostics: string[];
 };
 
 const states = new Map<string, SessionMemoryState>();
@@ -306,8 +319,19 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 		}
 
 		const { notesPath, currentNotes, template } = await ensureMemoryFile(ctx);
+		const preparedNotes = repairNotesToTemplate(currentNotes, template);
+		if (!preparedNotes.ok) {
+			return {
+				ok: false,
+				error: `Current session memory file drifted out of template shape: ${formatNotesRepairDiagnostics(preparedNotes.diagnostics)}`,
+			};
+		}
+		if (preparedNotes.repaired) {
+			await fs.writeFile(notesPath, preparedNotes.content, "utf8");
+		}
+
 		const conversationText = serializeConversation(convertToLlm(context.messages));
-		const prompt = await buildSessionMemoryUpdatePrompt(currentNotes, notesPath);
+		const prompt = await buildSessionMemoryUpdatePrompt(preparedNotes.content, notesPath);
 		const model = resolveModel(ctx);
 		if (!model) {
 			return { ok: false, error: "No model available for session memory extraction" };
@@ -316,7 +340,7 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 		const result = await runPiSubagent({
 			cwd: ctx.cwd,
 			prompt,
-			model: formatCliModel(model),
+			model: formatSubagentModelSpec(model),
 			tools: ["edit"],
 			signal: ctx.signal,
 			systemPrompt: ctx.getSystemPrompt(),
@@ -334,10 +358,17 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 			};
 		}
 
-		const nextNotes = sanitizeNotes(await fs.readFile(notesPath, "utf8"));
-		if (!matchesTemplateStructure(nextNotes, template)) {
-			return { ok: false, error: "Subagent output did not preserve the session memory template structure" };
+		const nextNotesResult = repairNotesToTemplate(await fs.readFile(notesPath, "utf8"), template);
+		if (!nextNotesResult.ok) {
+			return {
+				ok: false,
+				error: `Subagent output did not preserve the session memory template structure: ${formatNotesRepairDiagnostics(nextNotesResult.diagnostics)}`,
+			};
 		}
+		if (nextNotesResult.repaired) {
+			await fs.writeFile(notesPath, nextNotesResult.content, "utf8");
+		}
+		const nextNotes = nextNotesResult.content;
 
 		const tokenCount = ctx.getContextUsage()?.tokens ?? roughTokenCount(conversationText);
 		const nextState: SessionMemoryState = {
@@ -351,7 +382,7 @@ async function updateSessionMemory(pi: ExtensionAPI, ctx: ExtensionContext, opti
 		setState(pi, ctx, nextState);
 
 		if (options.reason === "manual" && ctx.hasUI) {
-			ctx.ui.notify("Session memory updated", "success");
+			ctx.ui.notify("Session memory updated", "info");
 		}
 
 		return {
@@ -379,8 +410,15 @@ function resolveModel(ctx: ExtensionContext) {
 	);
 }
 
-function formatCliModel(model: { provider: string; id: string }): string {
-	return `${model.provider}/${model.id}`;
+function formatSubagentModelSpec(model: { provider: string; id: string; reasoning?: boolean }): string {
+	const base = `${model.provider}/${model.id}`;
+	if (!model.reasoning) {
+		return base;
+	}
+
+	// Use an explicit low reasoning level so the subagent does not inherit a session/project
+	// default like `minimal`, which some OpenAI reasoning models reject.
+	return `${base}:low`;
 }
 
 function isSessionMemorySubagentProcess(): boolean {
@@ -433,19 +471,166 @@ function sanitizeNotes(raw: string): string {
 	return text.replace(/\r\n/g, "\n");
 }
 
-function matchesTemplateStructure(content: string, template: string): boolean {
-	const expected = extractTemplateMarkers(template);
-	const actual = extractTemplateMarkers(content);
-	if (expected.length !== actual.length) {
-		return false;
+function repairNotesToTemplate(content: string, template: string): NotesRepairResult {
+	const sanitizedContent = sanitizeNotes(content);
+	const templateSections = parseNotesSections(template);
+	if (templateSections.length === 0) {
+		return {
+			ok: false,
+			content: sanitizedContent,
+			repaired: false,
+			diagnostics: ["Session memory template has no recognizable '# ' section headers"],
+		};
 	}
-	return expected.every((marker, index) => marker === actual[index]);
+
+	const actualSections = parseNotesSections(sanitizedContent);
+	if (actualSections.length === 0) {
+		return {
+			ok: false,
+			content: sanitizedContent,
+			repaired: false,
+			diagnostics: [
+				sanitizedContent
+					? "No recognizable '# ' section headers found in the session memory file"
+					: "Session memory file became empty",
+			],
+		};
+	}
+
+	const diagnostics: string[] = [];
+	const rendered = renderNotesFromTemplate(templateSections, actualSections, diagnostics);
+	return {
+		ok: true,
+		content: rendered,
+		repaired: rendered !== sanitizedContent,
+		diagnostics,
+	};
 }
 
-function extractTemplateMarkers(content: string): string[] {
-	return content
-		.split("\n")
-		.filter((line) => line.startsWith("# ") || (/^_.*_$/.test(line) && !line.includes("[... section truncated")));
+function parseNotesSections(content: string): NotesSection[] {
+	const lines = sanitizeNotes(content).split("\n");
+	const sections: NotesSection[] = [];
+	let currentHeader: string | undefined;
+	let currentLines: string[] = [];
+
+	const flushSection = () => {
+		if (!currentHeader) {
+			return;
+		}
+		let cursor = 0;
+		while (cursor < currentLines.length && currentLines[cursor].trim() === "") {
+			cursor += 1;
+		}
+		let description = "";
+		if (cursor < currentLines.length && /^_.*_$/.test(currentLines[cursor])) {
+			description = currentLines[cursor];
+			cursor += 1;
+		}
+		const body = trimBlankLines(currentLines.slice(cursor)).join("\n");
+		sections.push({
+			header: currentHeader,
+			description,
+			body,
+		});
+		currentHeader = undefined;
+		currentLines = [];
+	};
+
+	for (const line of lines) {
+		if (line.startsWith("# ")) {
+			flushSection();
+			currentHeader = line;
+			currentLines = [];
+			continue;
+		}
+		if (!currentHeader) {
+			continue;
+		}
+		currentLines.push(line);
+	}
+
+	flushSection();
+	return sections;
+}
+
+function trimBlankLines(lines: string[]): string[] {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && lines[start].trim() === "") {
+		start += 1;
+	}
+	while (end > start && lines[end - 1].trim() === "") {
+		end -= 1;
+	}
+	return lines.slice(start, end);
+}
+
+function renderNotesFromTemplate(templateSections: NotesSection[], actualSections: NotesSection[], diagnostics: string[]): string {
+	const unusedIndexes = new Set(actualSections.map((_, index) => index));
+	const bodies = templateSections.map((templateSection, index) => {
+		const matchedIndex = findSectionMatch(templateSection, actualSections, unusedIndexes, index);
+		if (matchedIndex === -1) {
+			diagnostics.push(`Missing section ${templateSection.header}; restored an empty body`);
+			return "";
+		}
+
+		unusedIndexes.delete(matchedIndex);
+		const actualSection = actualSections[matchedIndex];
+		if (actualSection.header !== templateSection.header) {
+			diagnostics.push(
+				`Recovered ${templateSection.header} from section position ${matchedIndex + 1} (${actualSection.header})`,
+			);
+		}
+		if (templateSection.description && actualSection.description !== templateSection.description) {
+			diagnostics.push(`Restored the template guidance line under ${templateSection.header}`);
+		}
+		return actualSection.body;
+	});
+
+	for (const unusedIndex of unusedIndexes) {
+		diagnostics.push(`Ignored extra section ${actualSections[unusedIndex]?.header ?? `#${unusedIndex + 1}`}`);
+	}
+
+	const renderedLines: string[] = [];
+	for (const [index, section] of templateSections.entries()) {
+		if (index > 0) {
+			renderedLines.push("");
+		}
+		renderedLines.push(section.header);
+		if (section.description) {
+			renderedLines.push(section.description);
+		}
+		renderedLines.push("");
+		if (bodies[index]) {
+			renderedLines.push(bodies[index]);
+		}
+	}
+
+	return renderedLines.join("\n").trimEnd();
+}
+
+function findSectionMatch(
+	templateSection: NotesSection,
+	actualSections: NotesSection[],
+	unusedIndexes: Set<number>,
+	fallbackIndex: number,
+): number {
+	for (const index of unusedIndexes) {
+		if (actualSections[index]?.header === templateSection.header) {
+			return index;
+		}
+	}
+	if (unusedIndexes.has(fallbackIndex)) {
+		return fallbackIndex;
+	}
+	return -1;
+}
+
+function formatNotesRepairDiagnostics(diagnostics: string[]): string {
+	if (diagnostics.length === 0) {
+		return "structure drift could not be repaired";
+	}
+	return diagnostics.slice(0, 3).join("; ");
 }
 
 function roughTokenCount(content: string): number {

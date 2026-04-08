@@ -56,6 +56,7 @@ CRITICAL RULES FOR EDITING:
 -- The italic _section descriptions_ are TEMPLATE INSTRUCTIONS that must be preserved exactly as-is - they guide what content belongs in each section
 -- ONLY update the actual content that appears BELOW the italic _section descriptions_ within each existing section
 -- Do NOT add any new sections, summaries, or information outside the existing structure
+- Prefer minimal replacements that touch only the body text within a section; if a section is currently blank, insert content below the italic guidance line without replacing the header or guidance line
 - Do NOT reference this note-taking process or instructions anywhere in the notes
 - It's OK to skip updating a section if there are no substantial new insights to add. Do not add filler content like "No info yet", just leave sections blank/unedited if appropriate.
 - Write DETAILED, INFO-DENSE content for each section - include specifics like file paths, function names, error messages, exact commands, technical details, etc.
@@ -183,4 +184,3 @@ async function buildBasePrompt(currentNotes: string, notesPath: string): Promise
 export async function buildSessionMemoryUpdatePrompt(currentNotes: string, notesPath: string): Promise<string> {
 	return buildBasePrompt(currentNotes, notesPath);
 }
-
