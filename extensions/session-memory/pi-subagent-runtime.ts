@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export interface SubagentUsageStats {
 	input: number;
@@ -58,7 +58,7 @@ async function resolveRuntimeModule(): Promise<RunPiSubagentModule> {
 	const runtimePath = await findRuntimePath();
 	if (!runtimePath) {
 		throw new Error(
-			"pi-subagent-tool is required but was not found in the installed Pi packages. Install it with `pi install git:github.com/san-tian/pi-subagent-tool`.",
+			"pi-subagent-tool is required but was not found in the installed Pi packages or local monorepo packages. Install it with `pi install git:github.com/san-tian/pi-subagent-tool`.",
 		);
 	}
 
@@ -66,24 +66,46 @@ async function resolveRuntimeModule(): Promise<RunPiSubagentModule> {
 }
 
 async function findRuntimePath(): Promise<string | null> {
-	const packagesRoot = getPiPackagesRoot();
-	const preferred = path.join(packagesRoot, "san-tian", "pi-subagent-tool", "extensions", "subagent", "runtime.ts");
-	if (await exists(preferred)) {
-		return preferred;
-	}
-
-	const owners = await fs.readdir(packagesRoot, { withFileTypes: true }).catch(() => []);
-	for (const owner of owners) {
-		if (!owner.isDirectory()) {
-			continue;
-		}
-		const candidate = path.join(packagesRoot, owner.name, "pi-subagent-tool", "extensions", "subagent", "runtime.ts");
+	for (const candidate of getCandidateRuntimePaths()) {
 		if (await exists(candidate)) {
 			return candidate;
 		}
 	}
-
 	return null;
+}
+
+function getCandidateRuntimePaths(): string[] {
+	const candidates = new Set<string>();
+
+	const localPackage = path.resolve(
+		path.dirname(fileURLToPath(import.meta.url)),
+		"../../../pi-subagent-tool/extensions/subagent/runtime.ts",
+	);
+	candidates.add(localPackage);
+
+	const cwdCandidates = collectAncestorPackageCandidates(process.cwd());
+	for (const candidate of cwdCandidates) {
+		candidates.add(candidate);
+	}
+
+	const packagesRoot = getPiPackagesRoot();
+	candidates.add(path.join(packagesRoot, "san-tian", "pi-subagent-tool", "extensions", "subagent", "runtime.ts"));
+
+	return [...candidates];
+}
+
+function collectAncestorPackageCandidates(startDir: string): string[] {
+	const candidates: string[] = [];
+	let current = path.resolve(startDir);
+	let previous = "";
+
+	while (current !== previous) {
+		candidates.push(path.join(current, "packages", "pi-subagent-tool", "extensions", "subagent", "runtime.ts"));
+		previous = current;
+		current = path.dirname(current);
+	}
+
+	return candidates;
 }
 
 function getPiPackagesRoot(): string {
