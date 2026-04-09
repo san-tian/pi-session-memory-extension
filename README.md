@@ -38,15 +38,17 @@ From a local checkout:
 pi install /absolute/path/to/pi-session-memory-extension
 ```
 
-This package declares a packaged dependency on:
-
-- `pi-codex-remote-compaction` as the primary compaction hook for OpenAI Responses remote compaction
-
-This package does not bundle or install `pi-subagent-tool` internally. Session-memory extraction expects a separately installed `pi-subagent-tool` package at runtime:
+Install related packages independently when you want their behavior:
 
 ```bash
+pi install git:github.com/san-tian/pi-codex-remote-compaction
 pi install git:github.com/san-tian/pi-subagent-tool
 ```
+
+- `pi-codex-remote-compaction` stays responsible for remote compaction
+- `pi-subagent-tool` stays responsible for the independently installed subagent runtime helper
+
+This package does not bundle or auto-register those packages as child extensions.
 
 ## Repository Layout
 
